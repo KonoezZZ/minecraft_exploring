@@ -656,7 +656,7 @@ num_epochs = {0:10, 1:100, 2:500, 3:500, 4:100,
 
 sa2s_losses = []
 for action_class in range(len(available_actions))
-  train_loader, valid_loader = get_loaders(train_set, valid_set, action_class, BATCH_SIZE=4, shuffle=True, num_workers=0)
+  train_loader, valid_loader = get_loaders_sa2s(train_set, valid_set, action_class, BATCH_SIZE=4, shuffle=True, num_workers=0)
   print("***** action_class: {}, train_size: {}, valid_size: {} *****".format(action_class, len(train_loader.dataset), len(valid_loader.dataset)))
   model = UNet_sa2s(3,
         depth=param.unet_depth,
