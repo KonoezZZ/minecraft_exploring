@@ -11,6 +11,27 @@ print(torch.__version__)
 import matplotlib.pyplot as plt
 import numpy as np
 
+
+available_actions = [[0, 0, 0],   # no action
+            [0, 0, 1],   # jump
+            [0, 1, 0],   # right
+            [0, 1, 1],   # right+jump
+            [0, -1, 0],  # left
+            [0, -1, 1],  # left+jump
+            [1, 0, 0],   # forward
+            [1, 0, 1],
+            [1, 1, 0],
+            [1, 1, 1],
+            [1, -1, 0],
+            [1, -1, 1],
+            [-1, 0, 0],  # backward
+            [-1, 0, 1],
+            [-1, 1, 0],
+            [-1, 1, 1],
+            [-1, -1, 0],
+            [-1, -1, 1]]
+
+
 def heatmap(data, row_labels, col_labels, ax=None,
             cbar_kw={}, cbarlabel="", **kwargs):
     """
