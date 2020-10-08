@@ -252,9 +252,6 @@ class UNet_s2s(nn.Module):
         for i, module in enumerate(self.up_convs):
             before_pool = encoder_outs[-(i+2)]
             x = module(before_pool, x)
-        # No softmax is used. This means you need to use
-        # nn.CrossEntropyLoss is your training script,
-        # as this module includes a softmax already.
         x = self.conv_final(x)
         return F.sigmoid(x)
 
@@ -284,8 +281,10 @@ def plot_reconstructions(model, images, batch_idx):
     plt.savefig(str(batch_idx) + "reconstructed_images.png")
     plt.close()
     
+    
+    
 
-## train a U-Net ##
+## train S2S ##
 
 class param:
     img_size = (64, 64)
@@ -357,3 +356,312 @@ for epoch in range(2):
             if val_loss < min_loss:
                 torch.save(model.state_dict(), 'YOUR_PATH/MODEL_NAME.pt')
                 min_loss = val_loss
+
+                
+                                
+##### train SA2S #####
+
+# baselines
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from torch.autograd import Variable
+
+def get_loaders(train, valid, action_class, BATCH_SIZE, dataset=train_set, shuffle=True, num_workers=0):   # non-zero num_workers will get bugs in GPU mode
+        
+    available_actions = [[0, 0, 0],   # no action
+            [0, 0, 1],   # jump
+            [0, 1, 0],   # right
+            [0, 1, 1],   # right+jump
+            [0, -1, 0],  # left
+            [0, -1, 1],  # left+jump
+            [1, 0, 0],   # forward
+            [1, 0, 1],
+            [1, 1, 0],
+            [1, 1, 1],
+            [1, -1, 0],
+            [1, -1, 1],
+            [-1, 0, 0],  # backward
+            [-1, 0, 1],
+            [-1, 1, 0],
+            [-1, 1, 1],
+            [-1, -1, 0],
+            [-1, -1, 1]]
+
+    actions = dataset[1].squeeze().numpy()
+    classes = np.full((len(actions)), -1, dtype=np.int)
+    for i, a in enumerate(available_actions):
+        classes[np.all(actions == a, axis=1)] = i
+
+    dtype = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
+    train_ind = np.all(train[1].squeeze().numpy() == available_actions[action_class], axis=1)
+    valid_ind = np.all(valid[1].squeeze().numpy() == available_actions[action_class], axis=1)
+    
+    train_size = 0.8
+    x = torch.cat((train[0][train_ind].type(dtype), valid[0][valid_ind].type(dtype)), dim=0)
+    y = torch.cat((train[3][train_ind].type(dtype), valid[3][valid_ind].type(dtype)), dim=0)
+    size = int(len(x) * train_size)
+
+    x_train, y_train = x[:size], y[:size]
+    x_valid, y_valid = x[size:], y[size:]
+
+    train_set = MakeDataset(x_train/255, y_train/255)
+    valid_set = MakeDataset(x_valid/255, y_valid/255)
+
+    train_loader = DataLoader(train_set,
+                  batch_size=BATCH_SIZE,
+                  shuffle=shuffle,
+                  num_workers=num_workers)  
+        
+    valid_loader = DataLoader(valid_set,
+                  batch_size=BATCH_SIZE,
+                  shuffle=False,
+                  num_workers=num_workers)    
+        
+    return train_loader, valid_loader 
+
+
+def baseline_sa2s(action_class):
+
+    train_loader, valid_loader = get_loaders(train_set, valid_set, action_class, BATCH_SIZE=8)
+
+    losses = []
+    for epoch in range(1):
+        for i, data in enumerate(valid_loader):
+            X, y = data[0], data[1]
+            X, y = Variable(X), Variable(y)
+            losses.append(F.mse_loss(X * 255, y * 255).item())
+            if i == 10000:
+                break
+    print("*****action: {}, valid loss: {}*****".format(action_class, np.mean(losses)))
+
+
+for action_class in range(len(available_actions)):
+    baseline_sa2s(action_class)
+
+    
+# models
+class UNet_sa2s(nn.Module):
+    """ `UNet` class is based on https://arxiv.org/abs/1505.04597
+    The U-Net is a convolutional encoder-decoder neural network.
+    Contextual spatial information (from the decoding,
+    expansive pathway) about an input tensor is merged with
+    information representing the localization of details
+    (from the encoding, compressive pathway).
+    Modifications to the original paper:
+    (1) padding is used in 3x3 convolutions to prevent loss
+        of border pixels
+    (2) merging outputs does not require cropping due to (1)
+    (3) residual connections can be used by specifying
+        UNet(merge_mode='add')
+    (4) if non-parametric upsampling is used in the decoder
+        pathway (specified by upmode='upsample'), then an
+        additional 1x1 2d convolution occurs after upsampling
+        to reduce channel dimensionality by a factor of 2.
+        This channel halving happens with the convolution in
+        the tranpose convolution (specified by upmode='transpose')
+    """
+    def __init__(self, num_classes, in_channels=3, depth=5,
+                 start_filts=64, up_mode='upsample',
+                 merge_mode='concat'):
+        """
+        Arguments:
+            in_channels: int, number of channels in the input tensor.
+                Default is 3 for RGB images.
+            depth: int, number of MaxPools in the U-Net.
+            start_filts: int, number of convolutional filters for the
+                first conv.
+            up_mode: string, type of upconvolution. Choices: 'transpose'
+                for transpose convolution or 'upsample' for nearest neighbour
+                upsampling.
+        """
+        super(UNet_sa2s, self).__init__()
+        if up_mode in ('transpose', 'upsample'):
+            self.up_mode = up_mode
+        else:
+            raise ValueError("\"{}\" is not a valid mode for "
+                             "upsampling. Only \"transpose\" and "
+                             "\"upsample\" are allowed.".format(up_mode))
+        if merge_mode in ('concat', 'add'):
+            self.merge_mode = merge_mode
+        else:
+            raise ValueError("\"{}\" is not a valid mode for"
+                             "merging up and down paths. "
+                             "Only \"concat\" and "
+                             "\"add\" are allowed.".format(up_mode))
+        # NOTE: up_mode 'upsample' is incompatible with merge_mode 'add'
+        if self.up_mode == 'upsample' and self.merge_mode == 'add':
+            raise ValueError("up_mode \"upsample\" is incompatible "
+                             "with merge_mode \"add\" at the moment "
+                             "because it doesn't make sense to use "
+                             "nearest neighbour to reduce "
+                             "depth channels (by half).")
+        self.num_classes = num_classes
+        self.in_channels = in_channels
+        self.start_filts = start_filts
+        self.depth = depth
+        self.down_convs = []
+        self.up_convs = []
+        # create the encoder pathway and add to a list
+        for i in range(depth):
+            ins = self.in_channels if i == 0 else outs
+            outs = self.start_filts*(2**i)
+            pooling = True if i < depth-1 else False
+            down_conv = DownConv(ins, outs, pooling=pooling)
+            self.down_convs.append(down_conv)
+        # create the decoder pathway and add to a list
+        # - careful! decoding only requires depth-1 blocks
+        for i in range(depth-1):
+            ins = outs
+            outs = ins // 2
+            up_conv = UpConv(ins, outs, up_mode=up_mode,
+                merge_mode=merge_mode)
+            self.up_convs.append(up_conv)
+        self.conv_final = conv1x1(outs, self.num_classes)
+        # add the list of modules to current module
+        self.down_convs = nn.ModuleList(self.down_convs)
+        self.up_convs = nn.ModuleList(self.up_convs)
+        self.reset_params()
+    @staticmethod
+    def weight_init(m):
+        if isinstance(m, nn.Conv2d):
+            nn.init.xavier_normal(m.weight)
+            nn.init.constant(m.bias, 0)
+    def reset_params(self):
+        for i, m in enumerate(self.modules()):
+            self.weight_init(m)
+    def forward(self, x):
+        encoder_outs = []
+        # encoder pathway, save outputs for merging
+        for i, module in enumerate(self.down_convs):
+            x, before_pool = module(x)
+            encoder_outs.append(before_pool)
+        for i, module in enumerate(self.up_convs):
+            before_pool = encoder_outs[-(i+2)]
+            x = module(before_pool, x)
+        x = self.conv_final(x)
+        return F.sigmoid(x)
+  
+
+def get_loaders_sa2s(train, valid, action_class, BATCH_SIZE, shuffle=True, num_workers=0):   # non-zero num_workers will get bugs in GPU mode
+        
+    available_actions = [[0, 0, 0],   # no action
+            [0, 0, 1],   # jump
+            [0, 1, 0],   # right
+            [0, 1, 1],   # right+jump
+            [0, -1, 0],  # left
+            [0, -1, 1],  # left+jump
+            [1, 0, 0],   # forward
+            [1, 0, 1],
+            [1, 1, 0],
+            [1, 1, 1],
+            [1, -1, 0],
+            [1, -1, 1],
+            [-1, 0, 0],  # backward
+            [-1, 0, 1],
+            [-1, 1, 0],
+            [-1, 1, 1],
+            [-1, -1, 0],
+            [-1, -1, 1]]
+
+    actions = dataset[1].squeeze().numpy()
+    classes = np.full((len(actions)), -1, dtype=np.int)
+    for i, a in enumerate(available_actions):
+        classes[np.all(actions == a, axis=1)] = i
+
+    dtype = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
+    train_ind = np.all(train[1].squeeze().numpy() == available_actions[action_class], axis=1)
+    valid_ind = np.all(valid[1].squeeze().numpy() == available_actions[action_class], axis=1)
+    
+    train_size = 0.8
+    x = torch.cat((train[0][train_ind].type(dtype), valid[0][valid_ind].type(dtype)), dim=0)
+    y = torch.cat((train[3][train_ind].type(dtype), valid[3][valid_ind].type(dtype)), dim=0)
+    size = int(len(x) * train_size)
+
+    x_train, y_train = x[:size], y[:size]
+    x_valid, y_valid = x[size:], y[size:]
+
+    train_set = MakeDataset(x_train/255, y_train/255)
+    valid_set = MakeDataset(x_valid/255, y_valid/255)
+
+    train_loader = DataLoader(train_set,
+                  batch_size=BATCH_SIZE,
+                  shuffle=shuffle,
+                  num_workers=num_workers)  
+        
+    valid_loader = DataLoader(valid_set,
+                  batch_size=BATCH_SIZE,
+                  shuffle=False,
+                  num_workers=num_workers)    
+        
+    return train_loader, valid_loader 
+
+
+model = UNet_sa2s(3,
+        depth=param.unet_depth,
+        start_filts=param.unet_start_filters,
+        merge_mode='concat')
+optim = torch.optim.Adam(model.parameters(), lr=param.lr)
+
+def train_sa2s(train_loader, valid_loader, epochs, action_class, interval=param.log_interval):
+    iters = []
+    train_losses = []
+    val_losses = []
+    it = 0
+    min_loss = 9999
+    model.train()
+    for epoch in range(epochs):
+        for i, data in enumerate(train_loader):
+            X, y = data[0], data[1]
+            X = Variable(X)  # [N, 1, H, W]
+            y = Variable(y)  # [N, H, W] with class indices (0, 1)
+            output = model(X)  # [N, 3, H, W]
+            loss = F.mse_loss(output * 255, y * 255)
+            #loss = F.binary_cross_entropy(output, y)
+            train_loss = loss
+            optim.zero_grad()
+            loss.backward()
+            optim.step()
+        losses = []
+        for j, data in enumerate(valid_loader):
+            X, y = data[0], data[1]
+            X, y = Variable(X), Variable(y)
+            output = model(X)
+            losses.append(F.mse_loss(output * 255, y * 255).item())
+            valid_loss = np.mean(losses)
+        print('epoch: {}, train_loss: {}, valid_loss: {}'.format(epoch, train_loss, valid_loss))
+
+        if (epoch + 1) % interval == 0:
+            model.eval()
+            losses = []
+            for j, data in enumerate(valid_loader):
+                X, y = data[0], data[1]
+                X, y = Variable(X), Variable(y)
+                output = model(X)
+                losses.append(F.mse_loss(output * 255, y * 255).item())
+
+            val_loss = np.mean(losses)
+            if val_loss < min_loss:
+                torch.save(model.state_dict(), 'YOUR_PATH/MODEL_NAME'+str(action_class)+'.pt')
+                print('Better one saved!')
+                min_loss = val_loss
+
+
+num_epochs = {0:10, 1:100, 2:500, 3:500, 4:100, 
+        5:500, 6:10, 7:10, 8:20, 9:20, 
+        10:20, 11:20, 12:1000, 13:1000, 14:1000,
+        15:1000, 16:1000, 17:1000}
+
+sa2s_losses = []
+for action_class in range(len(available_actions))
+  train_loader, valid_loader = get_loaders(train_set, valid_set, action_class, BATCH_SIZE=4, shuffle=True, num_workers=0)
+  print("***** action_class: {}, train_size: {}, valid_size: {} *****".format(action_class, len(train_loader.dataset), len(valid_loader.dataset)))
+  model = UNet_sa2s(3,
+        depth=param.unet_depth,
+        start_filts=param.unet_start_filters,
+        merge_mode='concat')
+  optim = torch.optim.Adam(model.parameters(), lr=param.lr)
+  epochs = num_epochs[action_class]
+  train_sa2s(train_loader, valid_loader, epochs, action_class, interval=5)
