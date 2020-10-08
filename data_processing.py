@@ -113,51 +113,37 @@ class CustomizedDataset:
         return self._next_states #(num_samples,3,64,64)
     
     
-
 class MakeDataset(Dataset):
-
     def __init__(self, x, y):
         self.x = x
         self.y = y
-
     def __len__(self):
         return len(self.x)
-    
     def __getitem__(self, index):
         return self.x[index], self.y[index]
-
-
     
 class MakeAutoencoderDataset(Dataset):
-    
     def __init__(self, x):
         self.x = x
-    
     def __len__(self):
         return len(self.x)
-    
     def __getitem__(self, index):
         return self.x[index]
-
-    
       
 def get_loaders(train, valid, MODE, BATCH_SIZE, shuffle=True, num_workers=0):   # non-zero num_workers will get bugs in GPU mode
     if MODE == 's2a':
         x_train, y_train, x_valid, y_valid = train[0], train[1], valid[0], valid[1]
         train_set = MakeDataset(x_train, y_train)
         valid_set = MakeDataset(x_valid, y_valid)
-        
     elif MODE == 's2camera':
         x_train, y_train, x_valid, y_valid = train[0], train[2], valid[0], valid[2]
         train_set = MakeDataset(x_train, y_train)
         valid_set = MakeDataset(x_valid, y_valid)
-
     elif MODE == 's2s':
         dtype = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
         x_train, y_train, x_valid, y_valid = train[0].type(dtype), train[3].type(dtype), valid[0].type(dtype), valid[3].type(dtype)
         train_set = MakeDataset(x_train/255, y_train/255)
-        valid_set = MakeDataset(x_valid/255, y_valid/255)
-    
+        valid_set = MakeDataset(x_valid/255, y_valid/255)    
     elif MODE == 'sa2s':
         dtype = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
         x_train = torch.cat(
@@ -171,32 +157,28 @@ def get_loaders(train, valid, MODE, BATCH_SIZE, shuffle=True, num_workers=0):   
                         dim=1) 
         y_valid = valid[3]
         train_set = MakeDataset(x_train, y_train)
-        valid_set = MakeDataset(x_valid, y_valid)
-        
+        valid_set = MakeDataset(x_valid, y_valid)       
     elif MODE == 'autoencoder':
         x_train, x_valid = train[0], valid[0]
         train_set = MakeAutoencoderDataset(x_train)
-        valid_set = MakeAutoencoderDataset(x_valid)
-        
-    
+        valid_set = MakeAutoencoderDataset(x_valid)        
     else:
         print("ERROR: MODE NOT FOUND")
-
         
     train_loader = DataLoader(train_set,
                   batch_size=BATCH_SIZE,
                   shuffle=shuffle,
-                  num_workers=num_workers)  
-        
+                  num_workers=num_workers)         
     valid_loader = DataLoader(valid_set,
                   batch_size=BATCH_SIZE,
                   shuffle=False,
-                  num_workers=num_workers)    
-        
+                  num_workers=num_workers)        
     return train_loader, valid_loader 
+    
+    
     
 ##### save dataloaders #####
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 dataset = CustomizedDataset(data=data, train_size=0.8, device=device, zero_camera=False, zero_jump=False, num_tasks=60)
-torch.save(dataset.train_valid_split()[0], '/content/gdrive/My Drive/minecraft/customized_data/Navigate_train.pt')
-torch.save(dataset.train_valid_split()[1], '/content/gdrive/My Drive/minecraft/customized_data/Navigate_valid.pt')
+torch.save(dataset.train_valid_split()[0], 'YOUR_PATH/LOADER_NAME_train.pt')
+torch.save(dataset.train_valid_split()[1], 'YOUR_PATH/LOADER_NAME_valid.pt')
